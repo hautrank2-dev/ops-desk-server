@@ -10,4 +10,14 @@ export default () => ({
     apiSecret: process.env.CLOUDINARY_API_SECRET,
   },
   jwtSecret: process.env.JWT_SECRET,
+  ai: {
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    model: process.env.AI_MODEL || 'claude-opus-5-5',
+    fastModel: process.env.AI_FAST_MODEL || 'claude-haiku-5-5',
+    hfToken: process.env.HF_TOKEN,
+    // effort/maxTokens dùng từ Phase 1 (chat) và Phase 3 (suggest fix)
+    effortChat: 'medium',
+    effortFix: 'high',
+    maxTokens: 16000,
+  },
 });

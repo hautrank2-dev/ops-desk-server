@@ -16,6 +16,7 @@ import { AssetItemModule } from './modules/asset-item/asset-item.module';
 import { LocationModule } from './modules/location/location.module';
 import { TicketCommentModule } from './modules/ticket-comment/ticket-comment.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { AiModule } from './modules/ai/ai.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     LocationModule,
     TicketCommentModule,
     DashboardModule,
+    AiModule,
   ],
   controllers: [AppController],
   providers: [
