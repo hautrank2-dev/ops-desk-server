@@ -18,6 +18,7 @@ import { ToArrayQuery, ToStringArrayQuery } from 'src/utils/transform';
 export enum TicketPopulationEnum {
   CreatedBy = 'createdBy',
   UpdatedBy = 'updatedBy',
+  AssigneeId = 'assigneeId',
   assetItemId = 'assetItemId',
 }
 
@@ -98,6 +99,22 @@ export class TicketQueryDto extends QueryPagination {
   @IsOptional()
   @IsDateString()
   endDueAt?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Created date range start (ISO), example: 2026-02-01T00:00:00.000Z',
+  })
+  @IsOptional()
+  @IsDateString()
+  startCreatedAt?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Created date range end (ISO), example: 2026-02-28T23:59:59.999Z',
+  })
+  @IsOptional()
+  @IsDateString()
+  endCreatedAt?: string;
 
   @ApiPropertyOptional({
     description: 'User id',

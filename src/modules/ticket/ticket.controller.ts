@@ -61,8 +61,8 @@ export class TicketController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string, @Query() query: TicketAssetItemQueryDto) {
-    return this.ticketService.findOne(id);
+  findOne(@Param('id') id: string, @Query() query: TicketDetailQueryDto) {
+    return this.ticketService.findOne(id, query.populations);
   }
 
   @Patch(':id')

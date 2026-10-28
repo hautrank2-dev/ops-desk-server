@@ -1,7 +1,7 @@
 ---
-trigger: model_decision
-glob: src/**
 description: Quy ước thiết kế REST API cho tầng server — cách đặt tên query (page, pageSize, populations, sortBy, order, xxxId, xxxIds, startXxxAt/endXxxAt), cách lọc/tìm kiếm/phân trang, hình dạng response danh sách và lỗi. Đọc trước khi thêm/sửa bất kỳ endpoint list, DTO query, hay filter nào.
+paths:
+  - "src/**"
 ---
 
 # REST API — đặc tả quy ước (framework-agnostic)

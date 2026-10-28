@@ -7,7 +7,9 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import {
   catchError,
+  forkJoin,
   from,
+  map,
   mergeMap,
   Observable,
   switchMap,
@@ -17,6 +19,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { User, UserDocument } from 'src/schemas/user.schema';
 import { Model } from 'mongoose';
 import { UserQueryModel } from './dto/user.dto';
+import { UserQueryDto } from './dto/user-query.dto';
 import { escapeRegex } from 'src/utils/query';
 import * as bcrypt from 'bcrypt';
 
@@ -117,6 +120,41 @@ export class UserService {
     }
 
     return from(this.userModel.find(q).lean().exec());
+  }
+
+  findPaginated(query: UserQueryDto) {
+    const page = Math.max(1, query.page ?? 1);
+    const pageSize = Math.max(1, Math.min(200, query.pageSize ?? 20));
+    const q: Record<string, unknown> = {};
+
+    const search = query.search?.trim();
+    if (search) {
+      const regex = { $regex: escapeRegex(search), $options: 'i' };
+      q.$or = [{ name: regex }, { username: regex }, { email: regex }];
+    }
+    if (query.role) q.role = query.role;
+    if (query.status) q.status = query.status;
+
+    return forkJoin([
+      from(this.userModel.countDocuments(q)),
+      from(
+        this.userModel
+          .find(q)
+          .sort({ name: 1, _id: 1 })
+          .skip((page - 1) * pageSize)
+          .limit(pageSize)
+          .lean()
+          .exec(),
+      ),
+    ]).pipe(
+      map(([total, items]) => ({
+        items,
+        total,
+        page,
+        pageSize,
+        totalPage: Math.ceil(total / pageSize),
+      })),
+    );
   }
 
   findOne(id: string) {

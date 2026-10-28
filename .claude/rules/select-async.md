@@ -1,7 +1,7 @@
 ---
-trigger: model_decision
-glob: src/components/selects/**
 description: Ý tưởng tổng quát để xây một "async select" (dropdown tìm kiếm, phân trang, lazy-load dữ liệu từ server) dùng chung cho nhiều loại object khác nhau. Đọc trước khi tạo mới hoặc chỉnh sửa bất kỳ select nào gắn với dữ liệu server.
+paths:
+  - "src/components/selects/**"
 ---
 
 # Async Select — đặc tả tổng quát

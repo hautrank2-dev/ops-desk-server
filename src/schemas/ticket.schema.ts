@@ -67,7 +67,8 @@ export class Ticket {
   @Prop()
   locationId?: string;
 
-  @Prop()
+  // Stored as a string id; `ref` lets it be populated as a User.
+  @Prop({ type: String, ref: User.name })
   assigneeId?: string;
 
   @Prop()

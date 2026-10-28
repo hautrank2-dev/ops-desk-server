@@ -7,10 +7,12 @@ import {
   Param,
   Delete,
   UseGuards,
+  Query,
 } from '@nestjs/common';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UserQueryDto } from './dto/user-query.dto';
 import { AdminGuard } from 'src/guards/admin.guard';
 
 @Controller('user')
@@ -24,8 +26,10 @@ export class UserController {
   }
 
   @Get()
-  findAll() {
-    return this.userService.findAll();
+  findAll(@Query() query: UserQueryDto) {
+    return query.page
+      ? this.userService.findPaginated(query)
+      : this.userService.findAll(query);
   }
 
   @Get(':id')

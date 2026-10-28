@@ -30,6 +30,14 @@ import {
 } from './dto/ticket-item.dto';
 import { AssetItemService } from '../asset-item/asset-item.service';
 import { ItemStatus } from 'src/schemas/item.schema';
+import { TicketPriority, TicketStatus } from 'src/schemas/ticket.schema';
+import { escapeRegex } from 'src/utils/query';
+
+// Enum fields are sorted by business rank, not alphabetically.
+const RANKED_SORT: Record<string, string[]> = {
+  priority: Object.values(TicketPriority),
+  status: Object.values(TicketStatus),
+};
 
 @Injectable()
 export class TicketService {
@@ -140,6 +148,8 @@ export class TicketService {
       departmentId,
       startDueAt,
       endDueAt,
+      startCreatedAt,
+      endCreatedAt,
       page = 1,
       pageSize = 20,
       sortBy = 'createdAt',
@@ -151,8 +161,8 @@ export class TicketService {
     const filter: QueryFilter<Ticket> = {};
 
     // text search (partial, case-insensitive)
-    if (code) filter.code = { $regex: code, $options: 'i' };
-    if (title) filter.title = { $regex: title, $options: 'i' };
+    if (code) filter.code = { $regex: escapeRegex(code), $options: 'i' };
+    if (title) filter.title = { $regex: escapeRegex(title), $options: 'i' };
 
     // enums
     if (type) filter.type = type;
@@ -175,6 +185,14 @@ export class TicketService {
       if (endDueAt) filter.dueAt.$lte = new Date(endDueAt);
     }
 
+    // createdAt range
+    if (startCreatedAt || endCreatedAt) {
+      const createdAt: { $gte?: Date; $lte?: Date } = {};
+      if (startCreatedAt) createdAt.$gte = new Date(startCreatedAt);
+      if (endCreatedAt) createdAt.$lte = new Date(endCreatedAt);
+      filter.createdAt = createdAt;
+    }
+
     // pagination
     const safePage = Math.max(1, Number(page) || 1);
     const safePageSize = Math.max(1, Math.min(200, Number(pageSize) || 20));
@@ -191,40 +209,79 @@ export class TicketService {
       'title',
     ]);
     const safeSortBy = allowedSort.has(sortBy) ? sortBy : 'createdAt';
-    const sort = { [safeSortBy]: order === 'asc' ? 1 : -1 } as Record<
-      string,
-      1 | -1
-    >;
+    const dir = order === 'asc' ? 1 : -1;
 
     const count$ = from(this.ticketModel.countDocuments(filter));
 
-    let query = this.ticketModel
-      .find(filter)
-      .sort(sort)
-      .skip(skip)
-      .limit(safePageSize);
-
-    if (populations?.length) {
-      query = query.populate(populations);
-    }
-
-    const data$ = from(query.lean().exec());
+    const rankOrder = RANKED_SORT[safeSortBy];
+    const data$ = rankOrder
+      ? from(
+          this.findRankSorted(
+            filter,
+            safeSortBy,
+            rankOrder,
+            dir,
+            skip,
+            safePageSize,
+            populations,
+          ),
+        )
+      : from(
+          this.ticketModel
+            .find(filter)
+            .sort({ [safeSortBy]: dir, _id: dir })
+            .skip(skip)
+            .limit(safePageSize)
+            .populate(populations ?? [])
+            .lean()
+            .exec(),
+        );
 
     return forkJoin([count$, data$]).pipe(
       map(([total, items]) => {
         return {
           total,
-          totalPage: Math.ceil(total / pageSize),
-          items,
-          page,
-          pageSize,
+          totalPage: Math.ceil(total / safePageSize),
+          items: items as Ticket[],
+          page: safePage,
+          pageSize: safePageSize,
         };
       }),
     );
   }
 
-  findOne(id: string): Observable<Ticket> {
-    return from(this.ticketModel.findById(id).lean()).pipe(
+  /** Sort an enum field by its declared order (e.g. Low < ... < Urgent). */
+  private async findRankSorted(
+    filter: QueryFilter<Ticket>,
+    field: string,
+    rankOrder: string[],
+    dir: 1 | -1,
+    skip: number,
+    limit: number,
+    populations?: string[],
+  ) {
+    // Aggregate does not cast, so cast the filter through a query first.
+    const match = this.ticketModel.find().cast(this.ticketModel, filter);
+    const items = await this.ticketModel.aggregate([
+      { $match: match },
+      { $addFields: { _rank: { $indexOfArray: [rankOrder, `$${field}`] } } },
+      { $sort: { _rank: dir, createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      { $project: { _rank: 0 } },
+    ]);
+    return populations?.length
+      ? this.ticketModel.populate(items, populations.join(' '))
+      : items;
+  }
+
+  findOne(id: string, populations?: string[]): Observable<Ticket> {
+    return from(
+      this.ticketModel
+        .findById(id)
+        .populate(populations ?? [])
+        .lean(),
+    ).pipe(
       map(res => {
         if (!res) {
           throw new NotFoundException('Ticket not found');
