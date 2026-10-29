@@ -5,14 +5,24 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { Request, Response } from 'express';
 import { Model } from 'mongoose';
 import {
+  AiCard,
   AiConversation,
   AiConversationDocument,
+  AiMessage,
 } from 'src/schemas/ai-conversation.schema';
+import { Ticket } from 'src/schemas/ticket.schema';
+import { TicketComment } from 'src/schemas/ticket-comment.schema';
+import { User } from 'src/schemas/user.schema';
 import { TableResponse } from 'src/types/response';
 import { QueryPagination } from 'src/types/query';
 import { ANTHROPIC_CLIENT } from './ai.constants';
 import { ChatDto } from './dto/chat.dto';
 import { CHAT_SYSTEM_PROMPT } from './prompts/system';
+import { AI_TOOL_MAP, AI_TOOLS, AiToolDeps } from './tools';
+
+// Giới hạn số lượt gọi tool cho một câu hỏi; lượt cuối ép tool_choice none
+// để model buộc phải trả lời bằng text (history luôn hợp lệ).
+const MAX_TOOL_ROUNDS = 8;
 
 export interface AiHealth {
   model: string;
@@ -31,18 +41,26 @@ export interface AiConversationDetail extends AiConversationListItem {
   messages: Array<{
     role: 'user' | 'assistant';
     text: string;
+    cards: AiCard[];
     createdAt: Date;
   }>;
 }
 
 @Injectable()
 export class AiService {
+  private readonly toolDeps: AiToolDeps;
+
   constructor(
     @Inject(ANTHROPIC_CLIENT) private readonly anthropic: Anthropic | null,
     private readonly configService: ConfigService,
     @InjectModel(AiConversation.name)
     private readonly conversationModel: Model<AiConversationDocument>,
-  ) {}
+    @InjectModel(Ticket.name) ticketModel: Model<Ticket>,
+    @InjectModel(TicketComment.name) commentModel: Model<TicketComment>,
+    @InjectModel(User.name) userModel: Model<User>,
+  ) {
+    this.toolDeps = { ticketModel, commentModel, userModel };
+  }
 
   async checkHealth(): Promise<AiHealth> {
     const model = this.configService.get<string>('ai.fastModel') ?? '';
@@ -75,8 +93,8 @@ export class AiService {
     }
   }
 
-  // SSE: meta (conversationId) -> thinking*/text* -> done (usage) | error.
-  // `tool`/`card` sẽ được Phase 2/3 phát thêm vào cùng stream này.
+  // SSE: meta (conversationId) -> (thinking | text | tool | card)* ->
+  // done (usage) | error. Một câu hỏi có thể gồm nhiều lượt gọi API (tool use).
   async streamChat(
     userId: string,
     dto: ChatDto,
@@ -118,10 +136,23 @@ export class AiService {
 
     writeEvent('meta', { conversationId: String(conversation._id) });
 
-    const history = conversation.messages.map(m => ({
-      role: m.role,
-      content: m.content,
-    })) as Anthropic.MessageParam[];
+    // Drop thinking blocks from past turns: their signature is bound to the
+    // system prompt they were created with, so any prompt edit makes old
+    // conversations fail with "Invalid signature in thinking block". They
+    // are only required inside the current turn's tool loop (`messages`).
+    const history = conversation.messages
+      .map(m => ({
+        role: m.role,
+        content: Array.isArray(m.content)
+          ? (m.content as Anthropic.ContentBlockParam[]).filter(
+              block =>
+                block.type !== 'thinking' && block.type !== 'redacted_thinking',
+            )
+          : m.content,
+      }))
+      .filter(
+        m => !Array.isArray(m.content) || m.content.length > 0,
+      ) as Anthropic.MessageParam[];
 
     // Ngày giờ hiện tại + context trang đưa vào message user (không vào
     // system) để không làm vỡ prompt cache của system/tools.
@@ -138,70 +169,138 @@ export class AiService {
         'ai.effortChat',
       ) ?? 'medium';
 
-    const stream = this.anthropic.messages.stream({
-      model,
-      max_tokens: maxTokens,
-      system: [
-        {
-          type: 'text',
-          text: CHAT_SYSTEM_PROMPT,
-          cache_control: { type: 'ephemeral' },
-        },
-      ],
-      thinking: { type: 'adaptive', display: 'summarized' },
-      output_config: { effort },
-      messages: [...history, { role: 'user', content: userContent }],
-    });
+    const tools = AI_TOOLS.map(t => t.definition);
+    // cache_control ở system => cache cả tools + system (tools đứng trước).
+    const system: Anthropic.TextBlockParam[] = [
+      {
+        type: 'text',
+        text: CHAT_SYSTEM_PROMPT,
+        cache_control: { type: 'ephemeral' },
+      },
+    ];
 
-    const onClientClose = () => stream.abort();
-    req.on('close', onClientClose);
-
-    try {
-      for await (const event of stream) {
-        if (event.type === 'content_block_delta') {
-          if (event.delta.type === 'text_delta') {
-            writeEvent('text', { text: event.delta.text });
-          } else if (event.delta.type === 'thinking_delta') {
-            writeEvent('thinking', { text: event.delta.thinking });
-          }
-        }
-      }
-
-      const finalMessage = await stream.finalMessage();
-
-      if (finalMessage.stop_reason === 'refusal') {
-        writeEvent('error', {
-          message: 'Claude đã từ chối trả lời câu này.',
-          category: finalMessage.stop_details?.category ?? null,
-        });
-        writeEvent('done', { usage: finalMessage.usage });
-        return;
-      }
-
-      conversation.messages.push({
+    const messages: Anthropic.MessageParam[] = [
+      ...history,
+      { role: 'user', content: userContent },
+    ];
+    const newMessages: AiMessage[] = [
+      {
         role: 'user',
         content: userContent,
         displayText: dto.message,
         createdAt: new Date(),
-      });
-      conversation.messages.push({
-        role: 'assistant',
-        content: finalMessage.content,
-        displayText: finalMessage.content
-          .filter(
-            (block): block is Anthropic.TextBlock => block.type === 'text',
-          )
-          .map(block => block.text)
-          .join('\n'),
-        createdAt: new Date(),
-      });
-      await conversation.save();
+      },
+    ];
+    const usage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    };
 
-      if (finalMessage.stop_reason === 'max_tokens') {
-        writeEvent('error', {
-          message: 'Phản hồi bị cắt do quá dài (max_tokens).',
+    let currentStream: { abort: () => void } | null = null;
+    let aborted = false;
+    const onClientClose = () => {
+      aborted = true;
+      currentStream?.abort();
+    };
+    req.on('close', onClientClose);
+
+    try {
+      for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+        if (aborted) throw new Anthropic.APIUserAbortError();
+        const stream = this.anthropic.messages.stream({
+          model,
+          max_tokens: maxTokens,
+          system,
+          tools,
+          tool_choice:
+            round === MAX_TOOL_ROUNDS ? { type: 'none' } : { type: 'auto' },
+          thinking: { type: 'adaptive', display: 'summarized' },
+          output_config: { effort },
+          messages,
+        });
+        currentStream = stream;
+
+        for await (const event of stream) {
+          if (event.type === 'content_block_delta') {
+            if (event.delta.type === 'text_delta') {
+              writeEvent('text', { text: event.delta.text });
+            } else if (event.delta.type === 'thinking_delta') {
+              writeEvent('thinking', { text: event.delta.thinking });
+            }
+          } else if (
+            event.type === 'content_block_start' &&
+            event.content_block.type === 'tool_use'
+          ) {
+            writeEvent('tool', {
+              id: event.content_block.id,
+              name: event.content_block.name,
+              status: 'running',
+            });
+          }
+        }
+
+        const finalMessage = await stream.finalMessage();
+        usage.input_tokens += finalMessage.usage.input_tokens;
+        usage.output_tokens += finalMessage.usage.output_tokens;
+        usage.cache_read_input_tokens +=
+          finalMessage.usage.cache_read_input_tokens ?? 0;
+        usage.cache_creation_input_tokens +=
+          finalMessage.usage.cache_creation_input_tokens ?? 0;
+
+        if (finalMessage.stop_reason === 'refusal') {
+          // Bỏ cả câu hỏi này (không lưu) để hội thoại sau vẫn hợp lệ.
+          writeEvent('error', {
+            message: 'Claude đã từ chối trả lời câu này.',
+            category: finalMessage.stop_details?.category ?? null,
+          });
+          writeEvent('done', { usage });
+          return;
+        }
+
+        messages.push({ role: 'assistant', content: finalMessage.content });
+        const assistantMsg: AiMessage = {
+          role: 'assistant',
+          content: finalMessage.content,
+          displayText: finalMessage.content
+            .filter(
+              (block): block is Anthropic.TextBlock => block.type === 'text',
+            )
+            .map(block => block.text)
+            .join('\n'),
+          createdAt: new Date(),
+        };
+        newMessages.push(assistantMsg);
+
+        if (finalMessage.stop_reason === 'max_tokens') {
+          writeEvent('error', {
+            message: 'Phản hồi bị cắt do quá dài (max_tokens).',
+          });
+        }
+        if (finalMessage.stop_reason !== 'tool_use') break;
+
+        const toolUses = finalMessage.content.filter(
+          (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
+        );
+        const results = await Promise.all(
+          toolUses.map(block => this.runTool(block, writeEvent)),
+        );
+        const cards = results.flatMap(r => (r.card ? [r.card] : []));
+        if (cards.length) assistantMsg.cards = cards;
+
+        const toolResults = results.map(r => r.result);
+        messages.push({ role: 'user', content: toolResults });
+        newMessages.push({
+          role: 'user',
+          content: toolResults,
+          displayText: '',
+          createdAt: new Date(),
         });
       }
+
+      conversation.messages.push(...newMessages);
+      await conversation.save();
 
       if (!conversation.title) {
         this.generateTitle(String(conversation._id), dto.message).catch(
@@ -209,12 +308,54 @@ export class AiService {
         );
       }
 
-      writeEvent('done', { usage: finalMessage.usage });
+      writeEvent('done', { usage });
     } catch (error) {
       writeEvent('error', { message: this.describeStreamError(error) });
     } finally {
       req.off('close', onClientClose);
       res.end();
+    }
+  }
+
+  private async runTool(
+    block: Anthropic.ToolUseBlock,
+    writeEvent: (event: string, data: unknown) => void,
+  ): Promise<{ result: Anthropic.ToolResultBlockParam; card?: AiCard }> {
+    const fail = (message: string) => {
+      writeEvent('tool', { id: block.id, name: block.name, status: 'error' });
+      return {
+        result: {
+          type: 'tool_result' as const,
+          tool_use_id: block.id,
+          content: message,
+          is_error: true,
+        },
+      };
+    };
+
+    const tool = AI_TOOL_MAP.get(block.name);
+    if (!tool) return fail(`Unknown tool: ${block.name}`);
+    const parsed = tool.input.safeParse(block.input);
+    if (!parsed.success) return fail(`Invalid input: ${parsed.error.message}`);
+
+    try {
+      const output = await tool.run(parsed.data, this.toolDeps);
+      writeEvent('tool', { id: block.id, name: block.name, status: 'done' });
+      let card: AiCard | undefined;
+      if (tool.card) {
+        card = { type: tool.card, data: parsed.data };
+        writeEvent('card', card);
+      }
+      return {
+        result: {
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: JSON.stringify(output),
+        },
+        card,
+      };
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : 'Tool failed');
     }
   }
 
@@ -315,12 +456,32 @@ export class AiService {
       title: doc.title,
       createdAt: doc.createdAt,
       updatedAt: doc.updatedAt,
-      messages: doc.messages.map(m => ({
+      messages: this.toDisplayMessages(doc.messages),
+    };
+  }
+
+  // Ẩn các message tool_result và gộp các lượt assistant liên tiếp (của cùng
+  // một câu hỏi có tool use) thành một bong bóng chat.
+  private toDisplayMessages(
+    messages: AiMessage[],
+  ): AiConversationDetail['messages'] {
+    const out: AiConversationDetail['messages'] = [];
+    for (const m of messages) {
+      if (m.role === 'user' && Array.isArray(m.content)) continue;
+      const last = out[out.length - 1];
+      if (m.role === 'assistant' && last?.role === 'assistant') {
+        last.text = [last.text, m.displayText].filter(Boolean).join('\n\n');
+        last.cards.push(...(m.cards ?? []));
+        continue;
+      }
+      out.push({
         role: m.role,
         text: m.displayText,
+        cards: [...(m.cards ?? [])],
         createdAt: m.createdAt,
-      })),
-    };
+      });
+    }
+    return out;
   }
 
   async deleteConversation(

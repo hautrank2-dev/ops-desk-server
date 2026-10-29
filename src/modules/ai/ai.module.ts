@@ -6,6 +6,12 @@ import {
   AiConversation,
   AiConversationSchema,
 } from 'src/schemas/ai-conversation.schema';
+import { Ticket, TicketSchema } from 'src/schemas/ticket.schema';
+import {
+  TicketComment,
+  TicketCommentSchema,
+} from 'src/schemas/ticket-comment.schema';
+import { User, UserSchema } from 'src/schemas/user.schema';
 import { ANTHROPIC_CLIENT } from './ai.constants';
 import { AiController } from './ai.controller';
 import { AiService } from './ai.service';
@@ -14,6 +20,9 @@ import { AiService } from './ai.service';
   imports: [
     MongooseModule.forFeature([
       { name: AiConversation.name, schema: AiConversationSchema },
+      { name: Ticket.name, schema: TicketSchema },
+      { name: TicketComment.name, schema: TicketCommentSchema },
+      { name: User.name, schema: UserSchema },
     ]),
   ],
   controllers: [AiController],
