@@ -9,9 +9,11 @@ export interface AiToolDeps {
   ticketModel: Model<Ticket>;
   commentModel: Model<TicketComment>;
   userModel: Model<User>;
+  // User đang chat — bắt buộc cho tool ghi (updatedBy).
+  userId?: string;
 }
 
-// Mỗi tool = schema gửi cho Claude + zod validate input + handler chỉ đọc.
+// Mỗi tool = schema gửi cho Claude + zod validate input + handler (đa số chỉ đọc; assign_ticket là tool ghi).
 // `card` = tool chỉ dùng để trả structured output cho client (không đọc DB).
 export interface AiTool<S extends z.ZodType = z.ZodType> {
   definition: Anthropic.Tool;

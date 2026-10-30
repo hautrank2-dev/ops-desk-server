@@ -284,7 +284,7 @@ export class AiService {
           (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
         );
         const results = await Promise.all(
-          toolUses.map(block => this.runTool(block, writeEvent)),
+          toolUses.map(block => this.runTool(block, userId, writeEvent)),
         );
         const cards = results.flatMap(r => (r.card ? [r.card] : []));
         if (cards.length) assistantMsg.cards = cards;
@@ -319,6 +319,7 @@ export class AiService {
 
   private async runTool(
     block: Anthropic.ToolUseBlock,
+    userId: string,
     writeEvent: (event: string, data: unknown) => void,
   ): Promise<{ result: Anthropic.ToolResultBlockParam; card?: AiCard }> {
     const fail = (message: string) => {
@@ -339,7 +340,7 @@ export class AiService {
     if (!parsed.success) return fail(`Invalid input: ${parsed.error.message}`);
 
     try {
-      const output = await tool.run(parsed.data, this.toolDeps);
+      const output = await tool.run(parsed.data, { ...this.toolDeps, userId });
       writeEvent('tool', { id: block.id, name: block.name, status: 'done' });
       let card: AiCard | undefined;
       if (tool.card) {

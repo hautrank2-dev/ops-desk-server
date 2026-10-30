@@ -1,3 +1,4 @@
+import { assignTicketTool } from './assign-ticket.tool';
 import { getTicketStatsTool } from './get-ticket-stats.tool';
 import { getTicketTool } from './get-ticket.tool';
 import { presentRankingTool } from './present-ranking.tool';
@@ -11,6 +12,7 @@ export const AI_TOOLS = [
   getTicketStatsTool,
   searchUsersTool,
   presentRankingTool,
+  assignTicketTool,
 ] as AiTool[];
 
 export const AI_TOOL_MAP = new Map(AI_TOOLS.map(t => [t.definition.name, t]));
