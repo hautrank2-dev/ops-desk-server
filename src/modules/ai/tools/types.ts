@@ -19,5 +19,8 @@ export interface AiTool<S extends z.ZodType = z.ZodType> {
   definition: Anthropic.Tool;
   input: S;
   card?: string;
+  // Tool vừa đọc/ghi DB vừa muốn client vẽ card từ KẾT QUẢ (vd. nút chọn user
+  // khi assign_ticket trả "ambiguous"). Trả undefined = không có card.
+  toCard?: (output: unknown) => { type: string; data: unknown } | undefined;
   run: (input: z.infer<S>, deps: AiToolDeps) => Promise<unknown>;
 }

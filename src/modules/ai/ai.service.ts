@@ -345,8 +345,10 @@ export class AiService {
       let card: AiCard | undefined;
       if (tool.card) {
         card = { type: tool.card, data: parsed.data };
-        writeEvent('card', card);
+      } else if (tool.toCard) {
+        card = tool.toCard(output);
       }
+      if (card) writeEvent('card', card);
       return {
         result: {
           type: 'tool_result',

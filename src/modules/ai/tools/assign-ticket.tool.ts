@@ -32,6 +32,13 @@ export const assignTicketTool: AiTool<typeof input> = {
       },
     } as never,
   },
+  // Nhiều user trùng tên → client hiện nút để người dùng bấm chọn.
+  toCard: output => {
+    const result = output as { status?: string };
+    return result.status === 'ambiguous'
+      ? { type: 'user_choice', data: output }
+      : undefined;
+  },
   async run({ code, assignee }, { ticketModel, userModel, userId }) {
     if (!userId) throw new Error('Missing current user');
 
