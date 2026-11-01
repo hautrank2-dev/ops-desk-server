@@ -7,6 +7,7 @@ import {
   MinLength,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { UserRole, UserRoles } from 'src/schemas/user.schema';
 
 export class UpdateUserDto {
   @IsOptional()
@@ -26,8 +27,8 @@ export class UpdateUserDto {
   name?: string;
 
   @IsOptional()
-  @IsIn(['admin', 'user'])
-  role?: 'admin' | 'user';
+  @IsIn(UserRoles)
+  role?: UserRole;
 
   // Cho phép set/unset deptId: gửi null để unset (tuỳ cách bạn xử lý ở service)
   @IsOptional()
